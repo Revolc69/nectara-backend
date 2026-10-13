@@ -31,7 +31,7 @@ try {
         $password = trim($data->password);
 
         // ✨ FIXED: Removed the non-existent 'username' column from the SELECT statement
-        $query = "SELECT id, email, password, user_type FROM users WHERE email = :email LIMIT 1";
+        $query = "SELECT id, email, password, user_type, UNIX_TIMESTAMP(deactivated_at) AS deactivated_ts FROM users WHERE email = :email LIMIT 1";
         $stmt = $conn->prepare($query);
         $stmt->bindParam(":email", $email);
         $stmt->execute();
@@ -41,6 +41,18 @@ try {
 
             if (password_verify($password, $row['password'])) {
                 http_response_code(200);
+
+                // Deactivated accounts may still sign in during the 15-day grace period
+                // so they can see the countdown and reactivate. After that they are blocked
+                // (purge_deactivated.php removes them permanently).
+                $deleteAtTs = null;
+                if ($row['deactivated_ts'] !== null) {
+                    $deleteAtTs = (int)$row['deactivated_ts'] + 15 * 86400;
+                    if (time() >= $deleteAtTs) {
+                        echo json_encode(["status" => "error", "message" => "This account was deactivated and is scheduled for permanent deletion."]);
+                        exit();
+                    }
+                }
 
                 // ✨ CLEVER FALLBACK: Split email at the '@' mark to generate a clean handle automatically
                 // e.g., "nature_explorer@gmail.com" becomes "nature_explorer"
@@ -54,6 +66,7 @@ try {
                     "email" => $row['email'],
                     "username" => $generatedUsername,
                     "user_type" => $row['user_type'] ?? "regular",
+                    "delete_at_ts" => $deleteAtTs, // null = active; UNIX seconds = deactivated
                 ]);
                 exit();
             } else {

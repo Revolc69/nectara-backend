@@ -24,6 +24,10 @@ try {
     //    "🦋 Monarch Butterfly", "🦋 Honeybee", "🦋 Luna Moth" — note the
     //    butterfly emoji is hardcoded by the app regardless of actual species,
     //    so we strip leading emoji/symbols and match on the text itself).
+    /**
+     * @param mixed $raw
+     * @return string|null
+     */
     function categorize_pollinator($raw) {
         $s = strtolower(trim((string)$raw));
         $s = preg_replace('/^[^a-z0-9]+/u', '', $s);
