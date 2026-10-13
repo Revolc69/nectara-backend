@@ -7,6 +7,7 @@ header("Content-Type: application/json");
 // Throw exceptions on any mysqli error (bad query, missing column/table, etc.)
 // instead of silently returning false and causing a fatal 500 on ->fetch_assoc().
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+require_once __DIR__ . '/achievement_helpers.php';
 ini_set('display_errors', 0);
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -66,6 +67,13 @@ try {
         $sightings_by_user[(int)$row['user_id']] = (int)$row['cnt'];
     }
 
+    // ── Pins per user in the order they were made — used to work out WHEN each
+    //    user reached their current sighting count / sighting badges. ─────────
+    $has_created_at = table_has_column($conn, 'flower_pins', 'created_at');
+    $pins_by_user = ($metric === 'sightings' || $metric === 'badges')
+        ? fetch_pins_by_user($conn, $has_created_at)
+        : [];
+
     // ── Login dates per user (needed for "streak" and "badges" metrics) ───
     // best_streak_ever mirrors get_achievements.php: max(current_streak, longest_streak)
     $streak_by_user = [];
@@ -113,6 +121,10 @@ try {
             $streak_by_user[$uid] = [
                 'current' => $current_streak,
                 'best'    => max($current_streak, $longest_streak),
+                // The day the current streak hit its current length (= its latest login day).
+                'current_reached' => $current_streak > 0 ? $dates[0] : null,
+                // First day each streak milestone was ever reached (dates are DESC here).
+                'reach'   => streak_reach_dates(array_reverse($dates), [3, 7, 14, 30, 100]),
             ];
         }
     }
@@ -121,53 +133,55 @@ try {
     $streak_milestones = [3, 7, 14, 30, 100];
     $sighting_milestones = [1, 10, 25, 50, 100];
 
-    // ── Build value per user for the requested metric ──────────────────────
-    $values = []; // user_id => numeric value
+    // ── Build value + "when did they reach it" per user ────────────────────
+    $rows = [];
 
     foreach ($users as $uid => $u) {
+        $achieved_at = null;
+        $order_key   = null; // lower = reached earlier (pin id), used if timestamps are equal/missing
+        $pins        = $pins_by_user[$uid] ?? [];
+
         if ($metric === 'sightings') {
-            $values[$uid] = $sightings_by_user[$uid] ?? 0;
+            $value = $sightings_by_user[$uid] ?? 0;
+            if ($value > 0 && !empty($pins)) {
+                $last        = end($pins);       // the pin that brought them to this count
+                $achieved_at = $last['at'];
+                $order_key   = $last['id'];
+            }
         } elseif ($metric === 'streak') {
-            $values[$uid] = $streak_by_user[$uid]['current'] ?? 0;
+            $value       = $streak_by_user[$uid]['current'] ?? 0;
+            $achieved_at = $value > 0 ? ($streak_by_user[$uid]['current_reached'] ?? null) : null;
         } else { // badges
             $best_streak = $streak_by_user[$uid]['best'] ?? 0;
             $sightings   = $sightings_by_user[$uid] ?? 0;
+            $reach       = $streak_by_user[$uid]['reach'] ?? [];
             $earned = 0;
-            foreach ($streak_milestones as $m) { if ($best_streak >= $m) $earned++; }
-            foreach ($sighting_milestones as $m) { if ($sightings >= $m) $earned++; }
-            $values[$uid] = $earned;
+            $earned_times = [];
+            foreach ($streak_milestones as $m) {
+                if ($best_streak >= $m) { $earned++; $earned_times[] = $reach[$m] ?? null; }
+            }
+            foreach ($sighting_milestones as $m) {
+                if ($sightings >= $m) { $earned++; $earned_times[] = $pins[$m - 1]['at'] ?? null; }
+            }
+            $value       = $earned;
+            // Time of their most recent badge. Unknown (null) if any badge's time isn't recorded.
+            $achieved_at = latest_known_time($earned_times);
         }
-    }
 
-    // ── Sort descending, assign ranks (ties share the same rank) ──────────
-    // Keep EVERY user in the response. The frontend uses the first three
-    // entries as the three podium positions, so ties must not remove slots.
-    // Use user_id as a deterministic tie-breaker so the order is stable.
-    uksort($values, function ($a, $b) use ($values) {
-        if ($values[$a] === $values[$b]) {
-            return (int)$a <=> (int)$b;
-        }
-        return $values[$a] > $values[$b] ? -1 : 1;
-    });
-
-    $entries = [];
-    $rank = 0;
-    $prev_value = null;
-    $position = 0;
-    foreach ($values as $uid => $value) {
-        $position++;
-        if ($value !== $prev_value) {
-            $rank = $position;
-            $prev_value = $value;
-        }
-        $entries[] = [
-            "user_id"         => $uid,
-            "username"        => $users[$uid]['username'],
-            "value"           => $value,
-            "rank"            => $rank,
-            "is_current_user" => $uid === $current_user_id,
+        $rows[] = [
+            'user_id'     => $uid,
+            'username'    => $u['username'],
+            'value'       => (int)$value,
+            'achieved_at' => $achieved_at,
+            'order_key'   => $order_key,
         ];
     }
+
+    // ── Rank: higher value first; on a tie, whoever reached it FIRST. ───────
+    // (Previously ties were broken by user_id, i.e. who signed up first.)
+    // Keep EVERY user in the response — the frontend uses the first three
+    // entries as the podium positions.
+    $entries = build_ranked_entries($rows, $current_user_id);
 
     $current_user_rank  = null;
     $current_user_value = null;

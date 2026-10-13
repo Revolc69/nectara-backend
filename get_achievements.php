@@ -6,6 +6,7 @@ header("Content-Type: application/json");
 
 mysqli_report(MYSQLI_REPORT_OFF);
 ini_set('display_errors', 0);
+require_once __DIR__ . '/achievement_helpers.php';
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
@@ -143,6 +144,12 @@ try {
 
     $badges = [];
 
+    // When was each badge earned? Streak badges: the first day a run of logins
+    // reached that length. Sighting badges: when the Nth pin was created.
+    $streak_reach = streak_reach_dates(array_reverse($dates), $streak_milestones);
+    $has_created_at = table_has_column($conn, 'flower_pins', 'created_at');
+    $my_pins = fetch_pins_by_user($conn, $has_created_at, $user_id)[$user_id] ?? [];
+
     foreach ($streak_milestones as $m) {
         $badges[] = [
             "id" => "streak_$m",
@@ -151,6 +158,7 @@ try {
             "threshold" => $m,
             "progress" => min($best_streak_ever, $m),
             "earned" => $best_streak_ever >= $m,
+            "earned_at" => $best_streak_ever >= $m ? ($streak_reach[$m] ?? null) : null,
         ];
     }
 
@@ -162,6 +170,7 @@ try {
             "threshold" => $m,
             "progress" => min($total_sightings, $m),
             "earned" => $total_sightings >= $m,
+            "earned_at" => $total_sightings >= $m ? ($my_pins[$m - 1]['at'] ?? null) : null,
         ];
     }
 
