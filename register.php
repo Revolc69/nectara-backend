@@ -1,3 +1,4 @@
+
 <?php
 header("Access-Control-Allow-Origin: *");
 header("Content-Type: application/json; charset=UTF-8");
@@ -9,14 +10,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit(0);
 }
 
-$host = "localhost";
-$db_name = "nectara_db";
-$username = "root";
-$password = "";
-
 try {
-    $conn = new PDO("mysql:host=$host;dbname=$db_name", $username, $password);
-    $conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    require_once __DIR__ . "/db.php";
 
     $data = json_decode(file_get_contents("php://input"));
 
@@ -29,28 +24,45 @@ try {
         $checkStmt->bindParam(":email", $email);
         $checkStmt->execute();
 
-        if ($checkStmt->rowCount() > 0) {
-            echo json_encode(["status" => "error", "message" => "Email already registered."]);
+        if ($checkStmt->fetch(PDO::FETCH_ASSOC)) {
+            echo json_encode([
+                "status" => "error",
+                "message" => "Email already registered."
+            ]);
             exit();
         }
 
         $hashedPassword = password_hash($password, PASSWORD_BCRYPT);
+
         $query = "INSERT INTO users (email, password) VALUES (:email, :password)";
         $stmt = $conn->prepare($query);
         $stmt->bindParam(":email", $email);
         $stmt->bindParam(":password", $hashedPassword);
 
         if ($stmt->execute()) {
-            echo json_encode(["status" => "success", "message" => "Account successfully created."]);
+            echo json_encode([
+                "status" => "success",
+                "message" => "Account successfully created."
+            ]);
         } else {
-            echo json_encode(["status" => "error", "message" => "Server error."]);
+            echo json_encode([
+                "status" => "error",
+                "message" => "Server error."
+            ]);
         }
     } else {
-        echo json_encode(["status" => "error", "message" => "Incomplete data."]);
+        echo json_encode([
+            "status" => "error",
+            "message" => "Incomplete data."
+        ]);
     }
 } catch (PDOException $exception) {
-    // Any DB error now returns proper JSON instead of a raw PHP error page.
-    echo json_encode(["status" => "error", "message" => "Database error: " . $exception->getMessage()]);
+    error_log("Registration database error: " . $exception->getMessage());
+    http_response_code(500);
+    echo json_encode([
+        "status" => "error",
+        "message" => "A database error occurred."
+    ]);
     exit();
 }
 ?>
